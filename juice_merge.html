@@ -1,0 +1,914 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>JUICE MERGE</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#f7ead2;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  body{touch-action:none}
+  #app{height:100%;display:flex;justify-content:center;align-items:center}
+  #gameWrap{position:relative;width:min(100vw,520px);height:100dvh;max-height:900px;overflow:hidden;background:#f8e4bf url("./images/bg.png") center/cover no-repeat}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #hud{position:absolute;top:max(12px,env(safe-area-inset-top));left:14px;right:14px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none}
+  .pill{background:rgba(255,255,255,.82);backdrop-filter:blur(8px);border:2px solid rgba(100,70,35,.08);border-radius:18px;padding:7px 13px;box-shadow:0 5px 18px rgba(80,50,20,.08)}
+  .label{font-size:11px;font-weight:800;letter-spacing:.08em;color:#92795a}
+  .value{font-size:22px;font-weight:900;color:#493623;line-height:1.1}
+
+#mergeGuide{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:center;
+  flex:1;
+  min-width:0;
+  max-width:100%;
+  padding:0 3px;
+  gap:3px 3px;
+  transform:translateY(70px);
+  overflow:visible;
+}
+
+.mergeGuideFruit{
+  width:20px;
+  height:40px;
+  object-fit:contain;
+  flex:0 0 auto;
+}
+
+.mergeGuideArrow{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex:0 0 auto;
+  color:#c59b6a;
+  font-size:15px;
+  font-weight:900;
+  line-height:1;
+  margin:0 3px;
+}
+
+.mergeGuideBreak{
+  flex-basis:100%;
+  height:0;
+}
+
+  #nextBox{text-align:center;min-width:78px}
+  #nextFruit{display:block;width:56.4px;height:56.4px;margin:0 auto;object-fit:contain}
+  #hint{position:absolute;left:50%;transform:translateX(-50%);bottom:max(13px,env(safe-area-inset-bottom));width:calc(100% - 28px);text-align:center;color:#8f775b;font-size:12px;font-weight:700;pointer-events:none;opacity:.85}
+  #gameOver{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(67,46,25,.28);backdrop-filter:blur(4px)}
+  .panel{width:min(86%,360px);background:#fffaf0;border-radius:28px;padding:28px 24px;text-align:center;box-shadow:0 18px 60px rgba(60,40,20,.25)}
+  .panel h1{margin:0 0 8px;color:#4b3421;font-size:32px}
+  .panel p{margin:5px 0;color:#846d53;font-weight:700}
+  #finalScore{font-size:44px;font-weight:950;color:#e58c3a;margin:8px 0 20px}
+  button{border:0;border-radius:18px;background:#ef9b45;color:white;font-size:17px;font-weight:900;padding:13px 26px;box-shadow:0 6px 0 #cc7930;cursor:pointer}
+  button:active{transform:translateY(3px);box-shadow:0 3px 0 #cc7930}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="gameWrap">
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <div class="pill"><div class="label">SCORE</div><div id="score" class="value">0</div></div>
+      <div id="mergeGuide" aria-label="フルーツの進化ルート"></div>
+      <div id="nextBox" class="pill"><div class="label">NEXT</div><img id="nextFruit" src="./images/1.png" alt="次のジュース"></div>
+    </div>
+    <div id="gameOver">
+      <div class="panel">
+        <h1>GAME OVER</h1>
+        <p>スコア</p>
+        <div id="finalScore">0</div>
+        <button id="restart">もう一度遊ぶ</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const wrap = document.getElementById("gameWrap");
+const scoreEl = document.getElementById("score");
+const nextEl = document.getElementById("nextFruit");
+const mergeGuideEl = document.getElementById("mergeGuide");
+const overEl = document.getElementById("gameOver");
+const finalScoreEl = document.getElementById("finalScore");
+const restartBtn = document.getElementById("restart");
+
+let W=0,H=0,DPR=1;
+// 上方向にずらすピクセル量（正の値で上に移動）
+let verticalShift = 50;
+// 発射時の初速（負は上方向）
+const INITIAL_VY = -1100;
+const SLINGSHOT_SPEED_MULTIPLIER = 2.0;
+// プレビュー表示のX位置（ポインタ追従）
+let previewX = 0;
+let fruits=[];
+let score=0;
+let nextType=0;
+let currentType=0;
+let running=true;
+let last=0;
+let spawnCooldown=0;
+let shake=0;
+let settleAllTimer = 0;
+let audioContext=null;
+const MERGE_SOUND_DATA = "./sounds/merge.mp3";
+let mergeSoundBuffer=null;
+const GLASS_CLINK_FILES = [
+  "./sounds/glass_clink_01.wav",
+  "./sounds/glass_clink_02.wav",
+  "./sounds/glass_clink_03.wav",
+  "./sounds/glass_clink_04.wav",
+];
+let glassClinkBuffers=[];
+let glassClinkIndex=0;
+let audioBuffersReady=Promise.resolve();
+
+function loadAudioBuffer(source){
+  if(!audioContext)return Promise.resolve(null);
+  return fetch(source)
+    .then(response=>response.arrayBuffer())
+    .then(data=>audioContext.decodeAudioData(data))
+    .catch(()=>null);
+}
+
+function preloadAudioBuffers(){
+  if(!audioContext){
+    audioBuffersReady=Promise.resolve();
+    return;
+  }
+
+  audioBuffersReady=Promise.all([
+    loadAudioBuffer(MERGE_SOUND_DATA), GLASS_CLINK_FILES.map(loadAudioBuffer)
+  ]).then(buffers=>{
+    mergeSoundBuffer=buffers[0];
+    glassClinkBuffers=buffers.slice(1).filter(Boolean);
+  });
+}
+
+function initializeAudio(){
+  if(audioContext)return;
+
+  const AudioContextClass=window.AudioContext||window.webkitAudioContext;
+  if(!AudioContextClass)return;
+
+  try{
+    audioContext=new AudioContextClass({
+      latencyHint:"interactive"
+    });
+
+    preloadAudioBuffers();
+  }catch(error){
+    audioContext=null;
+  }
+}
+
+async function unlockAudio(){
+  initializeAudio();
+
+  if(!audioContext)return;
+
+  try{
+    if(audioContext.state==="suspended"){
+      await audioContext.resume();
+    }
+  }catch(error){}
+}
+
+function playAudioBuffer(buffer,volume=1,playbackRate=1){
+  if(!audioContext || !buffer)return;
+
+  try{
+    const source=audioContext.createBufferSource();
+    const gain=audioContext.createGain();
+
+    source.buffer=buffer;
+    source.playbackRate.value=playbackRate;
+    gain.gain.value=volume;
+
+    source.connect(gain);
+    gain.connect(audioContext.destination);
+
+    source.start(0);
+  }catch(error){}
+}
+
+const TYPES = [
+  {name:"lime",     image:"./images/1.png", r:30.4, points:1},
+  {name:"orange",   image:"./images/2.png", r:36.8, points:3},
+  {name:"apple",    image:"./images/3.png", r:43.2, points:7},
+  {name:"peach",    image:"./images/4.png", r:49.6, points:15},
+  {name:"melon",    image:"./images/5.png", r:57.6, points:31},
+  {name:"grape",    image:"./images/6.png", r:65.6, points:63},
+  {name:"blue",     image:"./images/7.png", r:75.2, points:127},
+  {name:"tropical", image:"./images/8.png", r:84.8, points:255},
+  {name:"ultimate", image:"./images/9.png", r:96, points:511}
+];
+
+const fruitImages = TYPES.map(type => {
+  const image = new Image();
+  image.src = type.image;
+  return image;
+});
+
+TYPES.forEach((type,index)=>{
+
+  // 5個目の前で改行
+  if(index===4){
+    const br=document.createElement("div");
+    br.className="mergeGuideBreak";
+    mergeGuideEl.appendChild(br);
+  }
+
+  const image=document.createElement("img");
+  image.className="mergeGuideFruit";
+  image.src=type.image;
+  image.alt="";
+  mergeGuideEl.appendChild(image);
+
+  // 最後の要素以外に矢印
+  if(index<TYPES.length-1){
+    const arrow=document.createElement("span");
+    arrow.className="mergeGuideArrow";
+    arrow.textContent="→";
+    mergeGuideEl.appendChild(arrow);
+  }
+});
+
+const backgroundImage = new Image();
+backgroundImage.src = "./images/bg.png";
+const HITBOX_X_OFFSET_RATIO=-0.12;
+const alphaBoundsCache=[];
+const CONTACT_POSITION_CORRECTION=0.3;
+const CONTACT_IMPULSE_RATIO=0.2;
+const OBJECT_SCALE=1.3;
+const SHOW_DEBUG_COLLIDERS=false;
+
+function unlockAudio(){
+  initializeAudio();
+  if(audioContext?.state==="suspended")audioContext.resume().catch(()=>{});
+}
+
+function playGlassImpact(speed,normalX,normalY){
+  if(speed < 18) return;
+  const bufferCount = glassClinkBuffers.length;
+  if (!bufferCount) return;
+  const randomIndex = Math.floor(Math.random() * bufferCount);
+  const buffer = glassClinkBuffers[randomIndex];
+  if(!buffer) return;
+  playAudioBuffer(buffer,0.28+Math.min(1,speed/520)*0.72);
+}
+
+function resize(){
+  const rect=wrap.getBoundingClientRect();
+  W=rect.width; H=rect.height; DPR=Math.min(devicePixelRatio||1,2);
+  canvas.width=Math.round(W*DPR); canvas.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  const bounds=playAreaBoundsForFruit(spawnYFor(radius(currentType)),radius(currentType));
+  previewX = clamp(W/2, bounds.left, bounds.right);
+}
+window.addEventListener("resize",resize);
+resize();
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function radius(t){return TYPES[t].r*OBJECT_SCALE}
+function imageHeightFor(t,r){
+  const image=fruitImages[t];
+  if(!image.complete || !image.naturalWidth)return r*2.16;
+  const scale=Math.min(r*2.16/image.naturalWidth,r*2.16/image.naturalHeight);
+  return image.naturalHeight*scale;
+}
+function imageRectFor(t,r){
+  const image=fruitImages[t];
+  if(!image.complete || !image.naturalWidth){
+    return {left:-r*1.08,right:r*1.08,top:-r*1.08,bottom:r*1.08};
+  }
+  const scale=Math.min(r*2.16/image.naturalWidth,r*2.16/image.naturalHeight);
+  const bounds=getAlphaBounds(t);
+  const imageTop=-image.naturalHeight*scale/2+bounds.top*scale;
+  const imageBottom=-image.naturalHeight*scale/2+bounds.bottom*scale;
+  return {
+    left:-image.naturalWidth*scale/2+bounds.left*scale+r*HITBOX_X_OFFSET_RATIO,
+    right:-image.naturalWidth*scale/2+bounds.right*scale+r*HITBOX_X_OFFSET_RATIO,
+    top:imageTop+(imageBottom-imageTop)*0.5,
+    bottom:imageBottom
+  };
+}
+function getAlphaBounds(t){
+  if(alphaBoundsCache[t])return alphaBoundsCache[t];
+  const image=fruitImages[t];
+  if(!image.complete || !image.naturalWidth){
+    return {left:0,top:0,right:image.naturalWidth||1,bottom:image.naturalHeight||1};
+  }
+  const buffer=document.createElement("canvas");
+  buffer.width=image.naturalWidth;
+  buffer.height=image.naturalHeight;
+  const bufferCtx=buffer.getContext("2d");
+  bufferCtx.drawImage(image,0,0);
+  const pixels=bufferCtx.getImageData(0,0,buffer.width,buffer.height).image;
+  let left=buffer.width, top=buffer.height, right=0, bottom=0;
+  for(let y=0;y<buffer.height;y++){
+    for(let x=0;x<buffer.width;x++){
+      if(pixels[(y*buffer.width+x)*4+3]>16){
+        left=Math.min(left,x); top=Math.min(top,y);
+        right=Math.max(right,x+1); bottom=Math.max(bottom,y+1);
+      }
+    }
+  }
+  const bounds={left,top,right,bottom};
+  alphaBoundsCache[t]=bounds;
+  return bounds;
+}
+function hitbox(f){
+  const rect=imageRectFor(f.t,f.r);
+  const left=f.x+rect.left, right=f.x+rect.right;
+  const top=f.y+rect.top, bottom=f.y+rect.bottom;
+  return {left,right,top,bottom,x:(left+right)/2,y:(top+bottom)/2,rx:(right-left)/2,ry:(bottom-top)/2};
+}
+function hitboxForRadius(y,r,t=currentType){
+  const rect=imageRectFor(t,r);
+  const left=rect.left, right=rect.right;
+  const top=y+rect.top, bottom=y+rect.bottom;
+  return {left,right,top,bottom,x:(left+right)/2,y:(top+bottom)/2,rx:(right-left)/2,ry:(bottom-top)/2};
+}
+function ellipseOverlap(a,b){
+  const dx=b.x-a.x, dy=b.y-a.y;
+  const rx=a.rx+b.rx, ry=a.ry+b.ry;
+  return (dx*dx)/(rx*rx)+(dy*dy)/(ry*ry)<=1;
+}
+function ellipseContact(a,b){
+  const dx=b.x-a.x, dy=b.y-a.y;
+  const rx=a.rx+b.rx, ry=a.ry+b.ry;
+  const normalizedDistance=Math.hypot(dx/rx,dy/ry);
+  if(normalizedDistance>1)return null;
+  let nx=dx/(rx*rx), ny=dy/(ry*ry);
+  const normalLength=Math.hypot(nx,ny) || 1;
+  nx/=normalLength;
+  ny/=normalLength;
+  return {
+    nx,
+    ny,
+    penetration:Math.min(rx,ry)*(1-normalizedDistance)
+  };
+}
+
+function playAreaBounds(y){
+  const topY=ceilingY();
+  const bottomY=limitLineY();
+  const progress=clamp((y-topY)/(bottomY-topY),0,1);
+  const topWidth=W*.68;
+  const bottomWidth=W*.9;
+  const width=topWidth+(bottomWidth-topWidth)*progress;
+  return {left:(W-width)/2, right:(W+width)/2};
+}
+
+function playAreaBoundsForFruit(y,r){
+  const hitboxShape=hitboxForRadius(y,r);
+  const bounds=playAreaBounds(hitboxShape.y);
+  return {left:bounds.left+8-hitboxShape.left, right:bounds.right-8-hitboxShape.right};
+}
+
+// 天井（フルーツが集まる上側の壁）
+function ceilingY(){
+  return Math.max(250, H * 0.12);
+}
+
+// ゲームオーバーの点線（下部ライン）
+function limitLineY(){
+  return H - 82 - verticalShift;
+}
+
+function setNext(){
+  currentType = nextType;
+  nextType = Math.floor(Math.random()*Math.min(5,TYPES.length));
+  nextEl.src = TYPES[nextType].image;
+  const bounds=playAreaBoundsForFruit(spawnYFor(radius(currentType)),radius(currentType));
+  previewX = clamp(previewX || W/2, bounds.left, bounds.right);
+}
+
+function reset(){
+  fruits=[];
+  score=0;
+  running=true;
+  shake=0;
+  spawnCooldown=0;
+  settleAllTimer=0;
+  overEl.style.display="none";
+  nextType=Math.floor(Math.random()*5);
+  setNext();
+  scoreEl.textContent="0";
+}
+reset();
+
+function spawn(x,velocityX=0,velocityY=INITIAL_VY){
+  const t=currentType;
+  const r=radius(t);
+  const bounds=playAreaBoundsForFruit(spawnYFor(r),r);
+  x=clamp(x,bounds.left,bounds.right);
+  
+  // 下部から上向きに発射
+  const spawnY = limitLineY() + r + 4;
+  const born = performance.now();
+  fruits.push({
+    x, y: spawnY, vx: velocityX, vy: velocityY, r, t, lastImpact: 0,
+    born
+  });
+  setNext();
+  spawnCooldown=.25;
+}
+
+function spawnYFor(r){
+  return limitLineY() + r + 4;
+}
+
+function gameOver(){
+  if(!running)return;
+  running=false;
+  finalScoreEl.textContent=score.toLocaleString();
+  overEl.style.display="flex";
+}
+
+function addScore(t){
+  score += TYPES[t].points;
+  scoreEl.textContent=score.toLocaleString();
+}
+
+function playMergeSound(type){
+  const progress=type/(TYPES.length-1);
+  playAudioBuffer(mergeSoundBuffer);
+}
+function tryMerge(a,b){
+  if(a.t!==b.t || a.t>=TYPES.length-1)return false;
+  const hitboxA=hitbox(a), hitboxB=hitbox(b);
+  if(!ellipseOverlap(hitboxA,hitboxB))return false;
+  
+  const nx=(hitboxA.x+hitboxB.x)/2, ny=(hitboxA.y+hitboxB.y)/2;
+  const nt=a.t+1;
+  const nr=radius(nt);
+  playMergeSound(nt);
+  
+  a.x=nx-(hitboxA.x-a.x); a.y=ny-(hitboxA.y-a.y); a.vx=(a.vx+b.vx)*.35; a.vy=(a.vy+b.vy)*.35;
+  a.t=nt; a.r=nr; a.born=performance.now();
+  fruits.splice(fruits.indexOf(b),1);
+  
+  addScore(nt);
+  shake=Math.min(9,shake+2.5);
+  return true;
+}
+
+function update(dt){
+  if(!running)return;
+  spawnCooldown=Math.max(0,spawnCooldown-dt);
+
+  for(const f of fruits){
+    // 発射時の初速のみを使う（毎フレームの上向き加速度は適用しない）
+    
+    // 動摩擦: 各フレームで速度を減衰させる（x/y両軸）
+    const frictionStrength=Math.max(f.r,radius(3))/radius(0);
+    const friction = Math.pow(0.99, dt*90*frictionStrength);
+    f.vx *= friction;
+    f.vy *= friction;
+
+    // 天井との接触
+    const currentHitbox=hitbox(f);
+    if(currentHitbox.top <= ceilingY()){
+      f.y += ceilingY()-currentHitbox.top;
+      if(f.vy < 0){
+        f.vy = -f.vy * 0.2;
+      }
+    }
+
+    // 左右の壁
+    const wallBounds=playAreaBounds(currentHitbox.y);
+    if(currentHitbox.left < wallBounds.left){
+      f.x += wallBounds.left-currentHitbox.left; f.vx = -f.vx * 0.3;
+    }
+    if(currentHitbox.right > wallBounds.right){
+      f.x -= currentHitbox.right-wallBounds.right; f.vx = -f.vx * 0.3;
+    }
+
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+  }
+
+  // 衝突＆合体
+  for(let pass=0; pass<3; pass++){
+    for(let i=0; i<fruits.length; i++){
+      for(let j=i+1; j<fruits.length; j++){
+        const a=fruits[i], b=fruits[j];
+        if(!a || !b) continue;
+        
+        const hitboxA=hitbox(a), hitboxB=hitbox(b);
+        const contact=ellipseContact(hitboxA,hitboxB);
+        if(contact){
+          const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
+          const relativeSpeed=-(rvx*contact.nx+rvy*contact.ny);
+          const impactNow=performance.now();
+          if(relativeSpeed>18 && impactNow-a.lastImpact>65 && impactNow-b.lastImpact>65){
+            playGlassImpact(relativeSpeed,contact.nx,contact.ny);
+            a.lastImpact=impactNow;
+            b.lastImpact=impactNow;
+          }
+          if(a.t === TYPES.length-1 && b.t === TYPES.length-1){
+            shake=Math.min(14,shake+6);
+            fruits.splice(j,1);
+            fruits.splice(i,1);
+            j=i;
+            continue;
+          }
+          if(a.t === b.t && a.t < TYPES.length-1){
+            if(tryMerge(a,b)){ j--; continue; }
+          } else {
+            const push=contact.penetration*CONTACT_POSITION_CORRECTION;
+            a.x-=contact.nx*push; a.y-=contact.ny*push;
+            b.x+=contact.nx*push; b.y+=contact.ny*push;
+            
+            const rel=rvx*contact.nx+rvy*contact.ny;
+            if(rel < 0){
+              const impulse=-rel*CONTACT_IMPULSE_RATIO;
+              a.vx-=contact.nx*impulse; a.vy-=contact.ny*impulse;
+              b.vx+=contact.nx*impulse; b.vy+=contact.ny*impulse;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ==========================================
+  // ゲームオーバー判定
+  // 1) 新しく発射したフルーツが上向きに飛んでいる間は除外
+  // 2) 画面下側の危険ラインを越えたとき、落下中またはほぼ止まったらゲームオーバー
+  // ==========================================
+  if(fruits.length > 0){
+    const lineY = limitLineY();
+    const now = performance.now();
+    // 真下にはみ出しているか（発射直後のオブジェクトは除外）
+    const hasOverflow = fruits.some(f => {
+      const belowLine = hitbox(f).bottom > lineY;
+      if(!belowLine) return false;
+      // 新しく発射・生成されたフルーツは短時間除外（誤判定防止）
+      if(now - (f.born || 0) < 1000) return false;
+      return true;
+    });
+
+    if(hasOverflow){
+      settleAllTimer += dt;
+      if(settleAllTimer > 0.12){
+        gameOver();
+      }
+    } else {
+      settleAllTimer = 0;
+    }
+  } else {
+    settleAllTimer = 0;
+  }
+
+  shake *= Math.pow(.03, dt);
+}
+
+function drawBackground(){
+  ctx.clearRect(0,0,W,H);
+  if(!backgroundImage.complete || !backgroundImage.naturalWidth){
+    ctx.fillStyle="#f8e4bf";
+    ctx.fillRect(0,0,W,H);
+    return;
+  }
+  const scale=Math.max(W/backgroundImage.naturalWidth,H/backgroundImage.naturalHeight);
+  const width=backgroundImage.naturalWidth*scale;
+  const height=backgroundImage.naturalHeight*scale;
+  ctx.drawImage(backgroundImage,(W-width)/2,(H-height)/2,width,height);
+}
+
+function drawPlayAreaDebug(){
+  const topY=ceilingY();
+  const bottomY=limitLineY();
+  const top=playAreaBounds(topY);
+  const bottom=playAreaBounds(bottomY);
+  ctx.save();
+  ctx.fillStyle="rgba(40, 170, 220, 0.18)";
+  ctx.strokeStyle="rgba(20, 120, 170, 0.75)";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(top.left,topY);
+  ctx.lineTo(top.right,topY);
+  ctx.lineTo(bottom.right,bottomY);
+  ctx.lineTo(bottom.left,bottomY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawFruit(f){
+  ctx.save();
+  ctx.translate(f.x,f.y);
+  const type=TYPES[f.t];
+
+  const image=fruitImages[f.t];
+  if(image.complete && image.naturalWidth){
+    const scale=Math.min(f.r*2.16/image.naturalWidth,f.r*2.16/image.naturalHeight);
+    const width=image.naturalWidth*scale;
+    const height=image.naturalHeight*scale;
+    ctx.drawImage(image,-width/2,-height/2,width,height);
+  }
+  ctx.restore();
+}
+
+function drawHitboxDebug(f){
+  const area=hitbox(f);
+  ctx.save();
+  ctx.fillStyle="rgba(230, 30, 30, 0.22)";
+  ctx.strokeStyle="rgba(190, 0, 0, 0.8)";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.ellipse(area.x,area.y,area.rx,area.ry,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function draw(){
+  const sx=shake ? (Math.random()*2-1)*shake : 0;
+  const sy=shake ? (Math.random()*2-1)*shake : 0;
+  ctx.save(); ctx.translate(sx,sy);
+  drawBackground();
+  if(SHOW_DEBUG_COLLIDERS)drawPlayAreaDebug();
+  
+  // ゲームオーバーのライン（赤点線）
+  const lineY = limitLineY();
+  ctx.strokeStyle="rgba(220, 60, 40, 0.4)";
+  ctx.lineWidth=2;
+  ctx.setLineDash([6,6]);
+  ctx.beginPath(); ctx.moveTo(0,lineY); ctx.lineTo(W,lineY); ctx.stroke();
+  ctx.setLineDash([]);
+  
+  const pr = radius(currentType);
+  const py = spawnYFor(pr);
+
+  // プレビュー（発射前に表示）
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+  const previewFruit={x: previewX, y: py, r: pr, t: currentType};
+  drawFruit(previewFruit);
+  if(SHOW_DEBUG_COLLIDERS)drawHitboxDebug(previewFruit);
+  ctx.restore();
+
+// 現在のスワイプ距離を計算
+  const currentDragDistance = aiming ? Math.hypot(aimVelocityX, aimVelocityY) : 0;
+  // キャンセル円の外に指が出たかどうか
+  const isOutsideCancelCircle = aiming && (Math.hypot(aimStartX - previewX, aimStartY - py) > cancelCircleRadius); 
+  // ※より正確には操作中の指の移動距離で判定：
+  // pointermove などで保持した指の現在位置、または計算されたベクトル距離を利用
+
+  // --------------------------------------------------------------------------
+  // キャンセル円の描画（発射モード時のみ表示）
+  // --------------------------------------------------------------------------
+  if (aiming && aimMode === "background") {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(aimStartX, aimStartY, cancelCircleRadius, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+// --------------------------------------------------------------------------
+  // 発射方向と初速を示す矢印（キャンセルの円の外側に指が出た時のみ表示）
+  // --------------------------------------------------------------------------
+  // 指の実際の移動距離（ピクセル）を計算
+  const dragDistance = Math.hypot(aimCurrentX - aimStartX, aimCurrentY - aimStartY);
+
+  if (aiming && aimMode === "background" && dragDistance > cancelCircleRadius) {
+    const aimSpeed = Math.hypot(aimVelocityX, aimVelocityY);
+    const aimAngle = aimSpeed ? Math.atan2(aimVelocityY, aimVelocityX) : -Math.PI / 2;
+
+    const speedRatio = clamp((aimSpeed - 200) / (800 - 200), 0, 1);
+
+    const totalLen = 70 + speedRatio * 62;
+    const headLen = Math.min(30 + speedRatio * 6, totalLen * 0.35);
+    const shaftLen = totalLen - headLen;
+
+    const tailW = 1;
+    const shaftW = 6 + speedRatio * 6;
+    const headW = 14 + speedRatio * 10;
+
+    ctx.save();
+    ctx.translate(
+      previewX + Math.cos(aimAngle) * (pr * 1.2 + 10),
+      py + Math.sin(aimAngle) * (pr * 1.2 + 10)
+    );
+    ctx.rotate(aimAngle);
+
+    ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+    
+    ctx.lineJoin = "miter";
+    ctx.miterLimit = 3;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, -tailW);
+    ctx.lineTo(shaftLen, -shaftW);
+    ctx.lineTo(shaftLen, -headW);
+    ctx.lineTo(shaftLen + headLen, 0);
+    ctx.lineTo(shaftLen, headW);
+    ctx.lineTo(shaftLen, shaftW);
+    ctx.lineTo(0, tailW);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const renderFruits=[...fruits].sort((a,b)=>a.y-b.y);
+  for(const f of renderFruits){
+    drawFruit(f);
+    if(SHOW_DEBUG_COLLIDERS)drawHitboxDebug(f);
+  }
+  ctx.restore();
+}
+
+function loop(t){
+  if(!last)last=t;
+  let dt=Math.min((t-last)/1000,.033);
+  last=t;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function pointerX(e){
+  const rect=canvas.getBoundingClientRect();
+  const r=radius(currentType);
+  const bounds=playAreaBoundsForFruit(spawnYFor(r),r);
+  return clamp(e.clientX - rect.left, bounds.left, bounds.right);
+}
+
+function pointerPosition(e){
+  const rect=canvas.getBoundingClientRect();
+  return {x:e.clientX-rect.left,y:e.clientY-rect.top};
+}
+
+function isInsidePreview(x,y){
+  const preview=hitboxForRadius(spawnYFor(radius(currentType)),radius(currentType));
+  const dx=(x-(previewX+preview.x))/preview.rx;
+  const dy=(y-preview.y)/preview.ry;
+  return dx*dx+dy*dy<=1;
+}
+
+function updateAimVelocity(deltaX, deltaY){
+  // スワイプ距離（ピクセル）を計算
+  const dragDistance = Math.hypot(deltaX, deltaY);
+
+  // 180px のスワイプで最大速度(1.0)に達する割合 (0.0 ～ 1.0)
+  // ※最小値制限（0.25など）を排除し、0から素直に変化させます
+  const speedRatio = clamp(dragDistance / 180, 0, 1.0);
+
+  // スワイプの角度（方向）を算出
+  // 上向き発射を基準にするため、標準の進行方向ベクトルを計算
+  const angle = Math.atan2(deltaY, deltaX);
+
+  // 反対方向（手前に引っ張って奥に飛ばす）に飛ばす場合は反転
+  const launchAngle = (aimMode === "background") ? angle + Math.PI : angle;
+
+  // 合成速度の最大値（ベース速度）
+  const maxSpeed = Math.abs(INITIAL_VY);
+
+  // 左右・上下合わせた最小0からの合成加速度（初速）
+  aimVelocityX = Math.cos(launchAngle) * maxSpeed * speedRatio;
+  aimVelocityY = Math.sin(launchAngle) * maxSpeed * speedRatio;
+}
+
+let aiming = false;
+let activePointerId = null;
+let aimStartX = 0;
+let aimStartY = 0;
+let aimStartPreviewX = 0;
+let aimMode = "background";
+let aimVelocityX = 0;
+let aimVelocityY = INITIAL_VY;
+let cancelCircleRadius = 40; // キャンセル判定用の円の半径 (px)
+let aimCurrentX = 0;
+let aimCurrentY = 0;
+
+// pointerdown イベント内
+canvas.addEventListener("pointerdown", async e => {
+  if(!running || spawnCooldown>0 || aiming)return;
+  e.preventDefault();
+  await unlockAudio();
+
+  aiming = true;
+  activePointerId = e.pointerId;
+  const position=pointerPosition(e);
+  aimStartX=position.x;
+  aimStartY=position.y;
+  
+  // --- 現在位置を初期化 ---
+  aimCurrentX=position.x;
+  aimCurrentY=position.y;
+  
+  aimStartPreviewX=previewX;
+  
+  const lineY = limitLineY();
+  if (position.y > lineY) {
+    aimMode = "object";
+  } else {
+    aimMode = "background";
+  }
+
+  aimVelocityX=0;
+  aimVelocityY=INITIAL_VY;
+  canvas.setPointerCapture?.(e.pointerId);
+}, {passive:false});
+
+// pointermove イベント内
+canvas.addEventListener("pointermove", e => {
+  if(!aiming || e.pointerId !== activePointerId)return;
+  e.preventDefault();
+  const position=pointerPosition(e);
+  
+  // --- 現在位置を常に更新 ---
+  aimCurrentX=position.x;
+  aimCurrentY=position.y;
+  
+  const deltaX=position.x-aimStartX;
+  const deltaY=position.y-aimStartY;
+  const r=radius(currentType);
+  const bounds=playAreaBoundsForFruit(spawnYFor(r),r);
+
+  if(aimMode==="object"){
+    previewX=clamp(aimStartPreviewX+deltaX,bounds.left,bounds.right);
+    return;
+  }
+  updateAimVelocity(deltaX,deltaY);
+}, {passive:false});
+
+canvas.addEventListener("pointermove", e => {
+  if(!aiming || e.pointerId !== activePointerId) return;
+  e.preventDefault();
+  const position = pointerPosition(e);
+  const deltaX = position.x - aimStartX;
+  const deltaY = position.y - aimStartY;
+  const r = radius(currentType);
+  const bounds = playAreaBoundsForFruit(spawnYFor(r), r);
+
+  if(aimMode === "object"){
+    // ラインより下でタップした場合：プレビュー物体を左右に移動
+    previewX = clamp(aimStartPreviewX + deltaX, bounds.left, bounds.right);
+    return;
+  }
+
+  // ラインより上でタップした場合：発射のベクトルを更新
+  updateAimVelocity(deltaX, deltaY);
+}, {passive:false});
+
+function releaseAim(e){
+  if(!aiming || e.pointerId !== activePointerId) return;
+  e.preventDefault();
+  const position = pointerPosition(e);
+  const deltaX = position.x - aimStartX;
+  const deltaY = position.y - aimStartY;
+  const x = previewX;
+
+  // タップ開始位置からの移動距離を計算
+  const dragDistance = Math.hypot(deltaX, deltaY);
+
+  // --- キャンセル判定 ---
+  // 指を離した位置が「白い円の内部（半径以内）」なら発射をキャンセル
+  const isCancelled = dragDistance <= cancelCircleRadius;
+
+  if (aimMode === "background") updateAimVelocity(deltaX, deltaY);
+
+  aiming = false;
+  activePointerId = null;
+  canvas.releasePointerCapture?.(e.pointerId);
+
+  // キャンセルされていない場合のみ発射
+  if (!isCancelled && aimMode === "background" && running && spawnCooldown <= 0) {
+    spawn(x, aimVelocityX, aimVelocityY);
+  }
+}
+
+canvas.addEventListener("pointerup", releaseAim, {passive:false});
+canvas.addEventListener("pointercancel", e => {
+  if(e.pointerId === activePointerId){
+    aiming = false;
+    activePointerId = null;
+  }
+}, {passive:false});
+
+restartBtn.addEventListener("click",reset);
+document.addEventListener("gesturestart",e=>e.preventDefault());
+})();
+</script>
+</body>
+</html>
