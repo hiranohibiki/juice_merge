@@ -146,7 +146,8 @@ function preloadAudioBuffers(){
   }
 
   audioBuffersReady=Promise.all([
-    loadAudioBuffer(MERGE_SOUND_DATA),GLASS_CLINK_FILES.map(loadAudioBuffer)
+    loadAudioBuffer(MERGE_SOUND_DATA),
+    ...GLASS_CLINK_FILES.map(loadAudioBuffer)
   ]).then(buffers=>{
     mergeSoundBuffer=buffers[0];
     glassClinkBuffers=buffers.slice(1).filter(Boolean);
@@ -169,6 +170,8 @@ function initializeAudio(){
     audioContext=null;
   }
 }
+
+initializeAudio();
 
 async function unlockAudio(){
   initializeAudio();
